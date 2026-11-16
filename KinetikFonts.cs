@@ -269,7 +269,7 @@ class FontsForm : Form
         };
         foreach (var src in Online.Sources) items.Add(I("online", src, src, web.TryGetValue(src, out var w) ? w.Count : -1));
         items.Add(Head("Folders"));
-        foreach (var f in lib.Cfg.Folders)
+        foreach (var f in lib.Cfg.Folders.Where(Directory.Exists))
         {
             var name = Path.GetFileName(f.TrimEnd('\\'));
             items.Add(I("src", f, name.Length > 0 ? name : f, Count(r => r.Folder == f)));
@@ -339,7 +339,7 @@ class FontsForm : Form
         try
         {
             var dir = Online.PreviewDir(o);
-            if (Directory.Exists(dir)) row.Path = Directory.EnumerateFiles(dir).FirstOrDefault(f => !f.EndsWith(".part"));
+            if (Directory.Exists(dir)) row.Path = Directory.EnumerateFiles(dir).FirstOrDefault(Online.IsFont);
         }
         catch { }
         return row;
@@ -524,7 +524,7 @@ class FontsForm : Form
     {
         if (r == null) return;
         if (r.IsWeb) { OpenUrl(r.Web?.Page); return; }
-        try { Process.Start("explorer.exe", $"/select,\"{r.Path}\""); } catch { }
+        try { Process.Start(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"), $"/select,\"{r.Path}\""); } catch { }
     }
 
     void AddFolder()
@@ -585,7 +585,7 @@ class FontsForm : Form
         else if (n.Kind == "src")
         {
             m.Items.Add("Rescan", null, (s, e) => Rescan());
-            m.Items.Add("Show in Explorer", null, (s, e) => { try { Process.Start("explorer.exe", $"\"{n.Arg}\""); } catch { } });
+            m.Items.Add("Show in Explorer", null, (s, e) => { try { if (Directory.Exists(n.Arg)) Process.Start(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"), $"/select,\"{Path.GetFullPath(n.Arg)}\""); } catch { } });
             m.Items.Add("Remove folder from the list", null, (s, e) => { lib.Forget(n.Arg); lib.Save(); Rescan(); });
         }
         else if (n.Kind == "set")
@@ -681,7 +681,7 @@ class FontsForm : Form
         catch (Exception e) { MessageBox.Show(this, "Could not read the backup: " + e.Message, "Restore settings", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
         if (MessageBox.Show(this, $"This backup has {c.Folders.Count:N0} folder(s), {c.Favourites.Count:N0} favourite(s), {c.Sets.Count:N0} set(s) and {c.Enabled.Count:N0} enabled font(s).\n\nReplace your current settings with it?",
                 "Restore settings", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-        try { lib.Restore(file); }
+        try { lib.Restore(c); }
         catch (Exception e) { MessageBox.Show(this, "Could not restore: " + e.Message, "Restore settings", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
         sort.SelectedItem = lib.Cfg.Sort;
         sampleBox.T.Text = lib.Cfg.Text;
@@ -712,9 +712,8 @@ class FontsForm : Form
         });
         m.Items.Add("Clear preview cache", null, (s, e) =>
         {
-            int n = 0;
-            try { foreach (var f in Directory.EnumerateFiles(Path.Combine(Online.Root, "preview"), "*", SearchOption.AllDirectories)) { try { File.Delete(f); n++; } catch { } } } catch { }
-            Note($"Removed {n:N0} cached preview file(s)");
+            try { Note($"Removed {Online.ClearPreviewCache(Path.Combine(Online.Root, "preview")):N0} cached preview file(s)"); }
+            catch (Exception ex) { Note(ex.Message); }
         });
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add("Back up settings…", null, (s, e) => BackupSettings());

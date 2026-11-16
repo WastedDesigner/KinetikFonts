@@ -121,6 +121,33 @@ class Library
         File.Move(tmp, path, true);
     }
 
+    // Imported paths must not contact a server merely to find out what they are.
+    // Check the drive spelling and type before examining any filesystem component.
+    internal static bool LocalPath(string p)
+    {
+        if (string.IsNullOrWhiteSpace(p) || !Path.IsPathFullyQualified(p) || p.Length < 3 ||
+            !char.IsAsciiLetter(p[0]) || p[1] != ':' || p[2] != '\\' ||
+            p.IndexOfAny(new[] { '"', '|', '<', '>', '*', '?', '/' }) >= 0 || p.IndexOf(':', 2) >= 0) return false;
+        try
+        {
+            string full = Path.GetFullPath(p);
+            if (!string.Equals(full.TrimEnd('\\'), p.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return false;
+            string root = Path.GetPathRoot(full);
+            if (new DriveInfo(root).DriveType is not (DriveType.Fixed or DriveType.Removable)) return false;
+            string part = root;
+            foreach (string component in full[root.Length..].Split('\\', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (component.TrimEnd(' ', '.') != component || component.Any(char.IsControl)) return false;
+                part = Path.Combine(part, component);
+                try { if ((File.GetAttributes(part) & FileAttributes.ReparsePoint) != 0) return false; }
+                catch (FileNotFoundException) { }
+                catch (DirectoryNotFoundException) { }
+            }
+            return true;
+        }
+        catch { return false; }
+    }
+
     // Reads and checks a backup; a damaged or foreign file is refused rather than half-applied.
     public static Config Unpack(string json)
     {
@@ -132,7 +159,10 @@ class Library
         var s = b.Settings;
         List<string> Clean(IEnumerable<string> src, Func<string, bool> ok) =>
             (src ?? new List<string>()).Where(x => !string.IsNullOrWhiteSpace(x) && x.Length < 1024 && ok(x)).Distinct(StringComparer.OrdinalIgnoreCase).Take(200000).ToList();
-        bool Font(string x) => Path.IsPathRooted(x) && Exts.Contains(Path.GetExtension(x).ToLowerInvariant());
+        foreach (var path in (s.Folders ?? new()).Concat((s.Enabled ?? new()).Where(x => !string.IsNullOrEmpty(x) && Exts.Contains(Path.GetExtension(x).ToLowerInvariant()))).Append(s.DownloadDir).Where(x => !string.IsNullOrWhiteSpace(x)))
+            if (!LocalPath(path)) throw new InvalidDataException("The backup contains a network, linked or invalid path. Add trusted locations manually instead.");
+        if ((s.Folders ?? new()).Any(File.Exists)) throw new InvalidDataException("A folder entry refers to a file.");
+        bool Font(string x) => Path.IsPathFullyQualified(x) && Exts.Contains(Path.GetExtension(x).ToLowerInvariant());
         var def = new Config();
         return new Config
         {
@@ -151,9 +181,8 @@ class Library
     }
 
     // Replaces the settings with a backup's and brings the enabled fonts in line with it.
-    public Config Restore(string path)
+    public Config Restore(Config c)
     {
-        var c = Unpack(File.ReadAllText(path));
         foreach (var p in Pub.Except(c.Enabled, StringComparer.OrdinalIgnoreCase).ToList()) { Native.RemoveFontResourceEx(p, 0, IntPtr.Zero); Pub.Remove(p); }
         foreach (var p in c.Enabled) if (!Pub.Contains(p) && File.Exists(p) && Native.AddFontResourceEx(p, 0, IntPtr.Zero) > 0) Pub.Add(p);
         Native.Broadcast();
@@ -177,6 +206,7 @@ class Library
         var head = Read(12);
         if (Encoding.ASCII.GetString(head, 0, 4) == "ttcf") { f.Position = 12; bas = U32(Read(4), 0); f.Position = bas; head = Read(12); }
         int n = U16(head, 4);
+        if (n > 4096 || bas + 12L + n * 16L > f.Length) throw new InvalidDataException("Invalid font table directory.");
         f.Position = bas + 12;
         var tables = new Dictionary<string, (uint off, uint len)>();
         for (int i = 0; i < n; i++)
@@ -185,13 +215,20 @@ class Library
             tables[Encoding.ASCII.GetString(d, 0, 4)] = (U32(d, 8), U32(d, 12));
         }
         if (!tables.TryGetValue("name", out var nt)) throw new InvalidDataException("no name table");
+        if (nt.len < 6 || nt.len > 4 * 1024 * 1024 || (long)nt.off + nt.len > f.Length)
+            throw new InvalidDataException("Invalid font name table size.");
         f.Position = nt.off;
         var t = Read((int)nt.len);
         int cnt = U16(t, 2), so = U16(t, 4);
+        if (cnt > 16384 || 6 + cnt * 12 > t.Length || so < 6 + cnt * 12 || so > t.Length)
+            throw new InvalidDataException("Invalid font name records.");
+        int textBytes = 0;
         var got = new Dictionary<int, string>();
         for (int i = 0; i < cnt; i++)
         {
             int p = 6 + 12 * i, pid = U16(t, p), lang = U16(t, p + 4), nid = U16(t, p + 6), l = U16(t, p + 8), o = U16(t, p + 10);
+            if (so + o + l > t.Length || (textBytes += l) > 4 * 1024 * 1024)
+                throw new InvalidDataException("Font name data exceeds its bounds.");
             string s;
             if (pid == 3) s = Encoding.BigEndianUnicode.GetString(t, so + o, l);
             else if (pid == 1) s = Encoding.Latin1.GetString(t, so + o, l); // approximates MacRoman
@@ -413,7 +450,7 @@ class Library
         var r = Installed();
         var live = r.Select(x => (x.Hive, x.Val)).ToHashSet();
         r.AddRange(Cfg.Disabled.Where(d => !live.Contains((d.Hive, d.Val))).Select(d => SysRow(d.Hive, d.Val, d.Data, false)));
-        var opt = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+        var opt = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint };
         foreach (var folder in Cfg.Folders.Where(Directory.Exists))
         {
             var src = Path.GetFileName(folder.TrimEnd('\\'));

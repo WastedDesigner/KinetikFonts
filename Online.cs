@@ -44,7 +44,36 @@ static class Online
     {
         foreach (var c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
         s = s.Trim().TrimEnd('.');
-        return s.Length == 0 ? "_" : s.Length > 80 ? s[..80] : s;
+        s = s[..Math.Min(80, s.Length)].TrimEnd(' ', '.');
+        return s.Length == 0 ? "_" : s;
+    }
+
+    internal static bool FontExtension(string path) =>
+        Path.GetExtension(path).ToLowerInvariant() is ".ttf" or ".otf" or ".ttc" or ".otc";
+
+    internal static string FontName(string name)
+    {
+        if (!FontExtension(name)) throw new InvalidDataException("Unexpected font extension.");
+        string ext = Path.GetExtension(name).ToLowerInvariant();
+        string stem = Safe(Path.GetFileNameWithoutExtension(name));
+        stem = stem[..Math.Min(stem.Length, 80 - ext.Length)].TrimEnd(' ', '.');
+        // Windows device names are reserved even when followed by an extension.
+        if (System.Text.RegularExpressions.Regex.IsMatch(stem.Split('.')[0].TrimEnd(),
+            @"^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[0-9¹²³])$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase)) stem = "_" + stem;
+        return stem + ext;
+    }
+
+    internal static int ClearPreviewCache(string preview)
+    {
+        if (Native.IsUserAnAdmin()) throw new UnauthorizedAccessException("Restart without administrator rights to clear the preview cache.");
+        if (!Library.LocalPath(preview)) throw new IOException("Cannot clear a linked or network cache.");
+        if (!Directory.Exists(preview)) return 0;
+        int n = 0;
+        var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true };
+        foreach (string file in Directory.EnumerateFiles(preview, "*", options))
+            try { File.Delete(file); n++; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        return n;
     }
 
     public static string PreviewDir(OnlineFont f) => Path.Combine(Root, "preview", Safe(f.Source), Safe(f.Id));
@@ -190,10 +219,11 @@ static class Online
     }
 
     // Only real font files are kept: the first bytes of a TrueType, OpenType or collection file.
-    static bool IsFont(string path)
+    internal static bool IsFont(string path)
     {
         try
         {
+            if (!FontExtension(path)) return false;
             using var s = File.OpenRead(path);
             var b = new byte[4];
             if (s.Read(b, 0, 4) < 4) return false;
@@ -220,7 +250,7 @@ static class Online
         foreach (var (name, url) in refs)
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || u.Scheme != "https" || !u.Host.EndsWith(".gstatic.com", StringComparison.OrdinalIgnoreCase)) continue;
-            var dest = Path.Combine(dir, Safe(name));
+            var dest = Path.Combine(dir, FontName(name));
             if (!File.Exists(dest)) await Download(url, dest, ct);
             got.Add(dest);
         }
@@ -233,26 +263,92 @@ static class Online
         try
         {
             await Download(url, tmp, ct);
-            using var zip = ZipFile.OpenRead(tmp);
-            bool Is(ZipArchiveEntry e, params string[] ext) => e.Name.Length > 0 && !e.FullName.Contains("__MACOSX") && ext.Any(x => e.Name.EndsWith(x, StringComparison.OrdinalIgnoreCase));
-            var entries = zip.Entries.Where(e => Is(e, ".ttf", ".ttc")).ToList();
-            if (entries.Count == 0) entries = zip.Entries.Where(e => Is(e, ".otf", ".otc")).ToList();
-            if (previewOnly && entries.Count > 1)
+            using var input = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var zip = OpenBoundedArchive(input);
+            return await ExtractFonts(zip, dir, previewOnly, ct, MaxDownload);
+        }
+        finally { try { File.Delete(tmp); } catch { } }
+    }
+
+    // ZipArchive.Entries materialises the whole central directory. Verify the
+    // actual central headers, not just the sender's declared entry count, first.
+    internal static ZipArchive OpenBoundedArchive(Stream stream)
+    {
+        const int endSize = 22, maxDirectory = 4 << 20, maxEntries = 4096;
+        if (stream.Length < endSize || stream.Length > MaxDownload) throw new InvalidDataException("Invalid archive size.");
+        var tail = new byte[(int)Math.Min(stream.Length, ushort.MaxValue + endSize)];
+        stream.Position = stream.Length - tail.Length;
+        stream.ReadExactly(tail);
+        int end = tail.Length - endSize;
+        while (end >= 0 && BitConverter.ToUInt32(tail, end) != 0x06054b50) end--;
+        if (end < 0 || end + endSize + BitConverter.ToUInt16(tail, end + 20) != tail.Length)
+            throw new InvalidDataException("Invalid archive footer.");
+        long endPosition = stream.Length - tail.Length + end;
+        uint start = BitConverter.ToUInt32(tail, end + 16), size = BitConverter.ToUInt32(tail, end + 12);
+        int count = BitConverter.ToUInt16(tail, end + 10);
+        if (BitConverter.ToUInt32(tail, end + 4) != 0 || BitConverter.ToUInt16(tail, end + 8) != count ||
+            count > maxEntries || size > maxDirectory || (long)start + size != endPosition)
+            throw new InvalidDataException("Unsupported or oversized archive directory.");
+        stream.Position = start;
+        var header = new byte[46];
+        for (int i = 0; i < count; i++)
+        {
+            if (endPosition - stream.Position < header.Length) throw new InvalidDataException("Incomplete archive directory.");
+            stream.ReadExactly(header);
+            if (BitConverter.ToUInt32(header, 0) != 0x02014b50) throw new InvalidDataException("Invalid archive entry.");
+            stream.Position += BitConverter.ToUInt16(header, 28) + BitConverter.ToUInt16(header, 30) + BitConverter.ToUInt16(header, 32);
+        }
+        if (stream.Position != endPosition) throw new InvalidDataException("Archive entry count mismatch.");
+        stream.Position = 0;
+        return new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
+    }
+
+    internal static async Task<List<string>> ExtractFonts(ZipArchive zip, string dir, bool previewOnly, CancellationToken ct, long limit)
+    {
+        if (zip.Entries.Count > 4096) throw new InvalidDataException("Too many archive entries.");
+        bool Is(ZipArchiveEntry e, params string[] ext) => e.Name.Length > 0 && !e.FullName.Contains("__MACOSX") && ext.Any(x => e.Name.EndsWith(x, StringComparison.OrdinalIgnoreCase));
+        var entries = zip.Entries.Where(e => Is(e, ".ttf", ".ttc")).ToList();
+        if (entries.Count == 0) entries = zip.Entries.Where(e => Is(e, ".otf", ".otc")).ToList();
+        if (previewOnly && entries.Count > 1)
+        {
+            var plain = entries.Where(e => e.Name.Contains("Regular", StringComparison.OrdinalIgnoreCase) && !e.Name.Contains("Italic", StringComparison.OrdinalIgnoreCase)).ToList();
+            entries = (plain.Count > 0 ? plain : entries).Take(1).ToList();
+        }
+        var selected = entries.GroupBy(e => e.Name, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
+        if (selected.Count > 256 || selected.Any(e => e.Length > limit) || selected.Sum(e => (decimal)e.Length) > limit)
+            throw new InvalidDataException("Font archive exceeds the extraction budget.");
+        var got = new List<string>(); var created = new List<string>();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        long remaining = limit;
+        try
+        {
+            foreach (var e in selected)
             {
-                var plain = entries.Where(e => e.Name.Contains("Regular", StringComparison.OrdinalIgnoreCase) && !e.Name.Contains("Italic", StringComparison.OrdinalIgnoreCase)).ToList();
-                entries = (plain.Count > 0 ? plain : entries).Take(1).ToList();
-            }
-            var got = new List<string>();
-            foreach (var e in entries.GroupBy(e => e.Name, StringComparer.OrdinalIgnoreCase).Select(g => g.First()))
-            {
-                if (e.Length > MaxDownload) continue;
-                var dest = Path.Combine(dir, Safe(e.Name)); // the file name only, so an archive cannot write outside dir
-                if (!File.Exists(dest)) e.ExtractToFile(dest);
+                string dest = Path.Combine(dir, FontName(e.Name));
+                if (!names.Add(dest)) throw new InvalidDataException("Duplicate font destination.");
+                if (!File.Exists(dest))
+                {
+                    using var input = e.Open();
+                    using var output = new FileStream(dest, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                    created.Add(dest);
+                    var buffer = new byte[81920]; long written = 0; int count;
+                    while ((count = await input.ReadAsync(buffer, ct)) != 0)
+                    {
+                        if (count > remaining || written + count > e.Length) throw new InvalidDataException("Font archive exceeds its size.");
+                        await output.WriteAsync(buffer.AsMemory(0, count), ct);
+                        written += count; remaining -= count;
+                    }
+                    if (written != e.Length) throw new InvalidDataException("Incomplete font entry.");
+                }
                 got.Add(dest);
             }
             return got;
         }
-        finally { try { File.Delete(tmp); } catch { } }
+        catch
+        {
+            foreach (string path in created) try { File.Delete(path); } catch { }
+            throw;
+        }
     }
 
     static async Task Download(string url, string dest, CancellationToken ct)
@@ -260,18 +356,21 @@ static class Online
         using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         resp.EnsureSuccessStatusCode();
         if (resp.Content.Headers.ContentLength > MaxDownload) throw new InvalidDataException("the download is too large");
-        var part = dest + ".part";
-        await using (var src = await resp.Content.ReadAsStreamAsync(ct))
-        await using (var dst = File.Create(part))
+        var part = dest + "." + Guid.NewGuid().ToString("N") + ".part";
+        try
         {
-            var buf = new byte[81920]; long total = 0; int n;
-            while ((n = await src.ReadAsync(buf, ct)) > 0)
+            await using (var src = await resp.Content.ReadAsStreamAsync(ct))
+            await using (var dst = File.Create(part))
             {
-                total += n;
-                if (total > MaxDownload) throw new InvalidDataException("the download is too large");
-                await dst.WriteAsync(buf.AsMemory(0, n), ct);
+                var buf = new byte[81920]; long total = 0; int n;
+                while ((n = await src.ReadAsync(buf, ct)) > 0)
+                {
+                    total += n;
+                    if (total > MaxDownload) throw new InvalidDataException("the download is too large");
+                    await dst.WriteAsync(buf.AsMemory(0, n), ct);
+                }
             }
-        }
-        File.Move(part, dest, true);
+            File.Move(part, dest, true);
+        } finally { try { File.Delete(part); } catch { } }
     }
 }
