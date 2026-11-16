@@ -142,10 +142,18 @@ class FontsForm : Form
             split.Panel1MinSize = S(440); split.Panel2MinSize = S(420);
             split.SplitterDistance = Math.Max(S(440), split.Width - S(720));
             LayoutHeader(); LayoutCtl();
+            if (lib.Fresh && ShotPath == null && File.Exists(Library.BackupBeside)
+                && MessageBox.Show(this, "Found a settings backup next to Kinetik Fonts. Restore your folders, favourites and sets from it?", "Kinetik Fonts", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            { RestoreSettings(Library.BackupBeside); return; }
             Rescan();
         };
         Activated += (s, e) => { if (!SameLook(Look.Current, look)) LookChanged(); };
-        FormClosing += (s, e) => lib.Save();
+        FormClosing += (s, e) =>
+        {
+            lib.Save();
+            // A copy beside the exe, so a new Windows can offer it back. Skipped while there's nothing worth keeping, and where the folder is read-only.
+            if (lib.Cfg.Folders.Count + lib.Fav.Count + lib.Cfg.Sets.Count > 0) try { lib.Backup(Library.BackupBeside); } catch { }
+        };
     }
 
     static bool SameLook(Look a, Look b) => a.Bg == b.Bg && a.Accent == b.Accent && a.Text == b.Text && a.Card == b.Card;
@@ -636,6 +644,46 @@ class FontsForm : Form
         m.Show(list, p);
     }
 
+    void BackupSettings()
+    {
+        using var d = new SaveFileDialog
+        {
+            Title = "Back up Kinetik Fonts settings", Filter = "Kinetik Fonts backup (*.json)|*.json", FileName = "KinetikFonts-settings.json",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), OverwritePrompt = true,
+        };
+        if (d.ShowDialog(this) != DialogResult.OK) return;
+        try { lib.Save(); lib.Backup(d.FileName); Note("Settings backed up to " + d.FileName); }
+        catch (Exception e) { MessageBox.Show(this, "Could not save the backup: " + e.Message, "Back up settings", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+    }
+
+    void RestoreSettings(string file)
+    {
+        if (file == null)
+        {
+            using var d = new OpenFileDialog
+            {
+                Title = "Restore Kinetik Fonts settings", Filter = "Kinetik Fonts backup (*.json)|*.json|All files (*.*)|*.*",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            };
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            file = d.FileName;
+        }
+        Config c;
+        try { c = Library.Unpack(File.ReadAllText(file)); }
+        catch (Exception e) { MessageBox.Show(this, "Could not read the backup: " + e.Message, "Restore settings", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+        if (MessageBox.Show(this, $"This backup has {c.Folders.Count:N0} folder(s), {c.Favourites.Count:N0} favourite(s), {c.Sets.Count:N0} set(s) and {c.Enabled.Count:N0} enabled font(s).\n\nReplace your current settings with it?",
+                "Restore settings", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        try { lib.Restore(file); }
+        catch (Exception e) { MessageBox.Show(this, "Could not restore: " + e.Message, "Restore settings", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+        sort.SelectedItem = lib.Cfg.Sort;
+        sampleBox.T.Text = lib.Cfg.Text;
+        slider.Value = lib.Cfg.Size;
+        layout.Index = lib.Cfg.Stacked ? 1 : 0;
+        nav.CurKind = "all"; nav.CurArg = "";
+        Rescan();
+        Note("Settings restored");
+    }
+
     void SetCat(List<FontRow> rows, string cat)
     {
         foreach (var r in rows) { if (cat == null) lib.Cfg.Cats.Remove(r.Key); else { lib.Cfg.Cats[r.Key] = cat; r.Cat = cat; } }
@@ -660,6 +708,9 @@ class FontsForm : Form
             try { foreach (var f in Directory.EnumerateFiles(Path.Combine(Online.Root, "preview"), "*", SearchOption.AllDirectories)) { try { File.Delete(f); n++; } catch { } } } catch { }
             Note($"Removed {n:N0} cached preview file(s)");
         });
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add("Back up settings…", null, (s, e) => BackupSettings());
+        m.Items.Add("Restore settings…", null, (s, e) => RestoreSettings(null));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(Look.MenuItem(LookChanged));
         m.Show(at, new Point(0, at.Height));
@@ -736,8 +787,17 @@ class FontsForm : Form
     static int Main(string[] a)
     {
         if (a.Contains("--test"))
-            return Library.FaceInfo(Path.Combine(Library.SysDir, "arial.ttf")).GetValueOrDefault(1) == "Arial"
+        {
+            var t = new Config { Folders = { @"D:\x" }, Favourites = { "a" }, Sets = { ["S"] = new() { "k" } }, Size = 500, Sort = "bogus", Cats = { ["f"] = "Script", ["g"] = "Nonsense" } };
+            t.Enabled.Add(@"C:\Windows\Fonts\arial.ttf"); t.Enabled.Add("not-a-font.exe");
+            var u = Library.Unpack(Library.Pack(t));
+            bool backupOk = u.Folders.Count == 1 && u.Favourites[0] == "a" && u.Sets["S"][0] == "k" && u.Size == 120 && u.Sort == "Name"
+                && u.Cats.Count == 1 && u.Enabled.Count == 1 && u.Disabled.Count == 0;
+            bool refuses = false;
+            try { Library.Unpack("{\"app\":\"other\"}"); } catch (InvalidDataException) { refuses = true; }
+            return backupOk && refuses && Library.FaceInfo(Path.Combine(Library.SysDir, "arial.ttf")).GetValueOrDefault(1) == "Arial"
                 && Library.Installed().Count > 20 && Library.Norm("Arial Bold!") == "arialbold" ? 0 : 1;
+        }
         int di = Array.IndexOf(a, "--dump"); // test aid: every font with its detected category
         if (di >= 0) { File.WriteAllLines(a[di + 1], new Library().BuildRows().Select(r => { var n = r.Ready || !File.Exists(r.Path) ? null : (Dictionary<int, string>)null; Dictionary<int, string> d = null; try { d = Library.FaceInfo(r.Path); } catch { } return $"{r.Cat}	{r.Name}	{r.Src}	{d?.GetValueOrDefault(-2)}"; })); return 0; }
         int gi = Array.IndexOf(a, "--get"); // --get <source> <family> [install] <log>: downloads a font into the library and optionally installs it, headless

@@ -23,7 +23,9 @@ It's one of the **Kinetik** apps, alongside [Kinetik Stats](https://github.com/W
 - [Categories](#categories)
 - [Online fonts](#online-fonts)
 - [Enabling, disabling and installing](#enabling-disabling-and-installing)
+- [Back up and restore](#back-up-and-restore)
 - [Themes](#themes)
+- [Download and use](#download-and-use)
 - [Tips and shortcuts](#tips-and-shortcuts)
 - [Where things are kept](#where-things-are-kept)
 - [Requirements](#requirements)
@@ -43,6 +45,7 @@ It's one of the **Kinetik** apps, alongside [Kinetik Stats](https://github.com/W
 - **Duplicates** view that finds fonts you have twice, and a **Not installed** view for fonts that only live in a folder
 - **Favourites and sets:** group fonts into named sets and switch a whole set on or off together
 - **Online search and install** from Google Fonts, Fontshare and Font Squirrel
+- **Back up and restore** your folders, favourites, sets and preferences, with a copy kept beside the exe for a fresh Windows
 - **One app theme** shared with the other Kinetik apps
 - Portable: a single exe, no installer, no account, no telemetry
 
@@ -119,9 +122,27 @@ There are three different things, and the app keeps them straight:
 
 Switching many fonts at once is fine (it asks before doing more than 300). Open apps pick the change up when they next list fonts; some only read the list when they start.
 
+## Back up and restore
+
+Your folders, favourites, sets, category choices, the folder fonts you've switched on, your sample text and your sort and download-folder choices can all be saved to one file and brought back later.
+
+- **⋯ → Back up settings…** saves them as `KinetikFonts-settings.json` wherever you choose.
+- **⋯ → Restore settings…** reads one back. It shows what's in the file first (folders, favourites, sets, enabled fonts), asks you to confirm, then replaces your settings and switches the right fonts on and off to match. A file that isn't a Kinetik Fonts backup, or was made by a newer version, is refused and nothing changes.
+- **Automatic copy:** when you close the app it also writes `KinetikFonts-settings.json` next to the exe (if the folder lets it, and only once you have something worth keeping). On a fresh Windows, the first run offers to restore from it.
+
+Not included: which *installed* fonts you've switched off (that belongs to one PC's font list), the downloaded fonts themselves and the online catalogue cache. Fonts that are installed in Windows aren't touched by a restore.
+
 ## Themes
 
 Kinetik Fonts uses the suite's app theme: **Match Windows, Graphite, OLED black, Midnight, Nord, Mocha, Forest, Light or Paper**, with a Sky, Violet, Mint, Amber, Rose or Coral accent, or your Windows accent. Pick it from **⋯ → App theme** and every Kinetik app follows.
+
+## Download and use
+
+1. Download `KinetikFonts.zip` from [Releases](../../releases/latest) and extract it anywhere.
+2. Run `KinetikFonts.exe`. Install the .NET 8 Desktop Runtime if Windows asks for it.
+3. Click **Add folder…** in the sidebar and point it at a folder of fonts, or just browse the **Installed** fonts and the **Online** sources.
+
+The exe is signed with my own certificate, which Windows doesn't know, so Windows may still show an "unknown publisher" or SmartScreen warning. Each release lists the SHA-256 of the exe so you can check your download. It's one portable file: delete it and its settings (see [Where things are kept](#where-things-are-kept)) to remove it.
 
 ## Tips and shortcuts
 
@@ -134,13 +155,14 @@ Kinetik Fonts uses the suite's app theme: **Match Windows, Graphite, OLED black,
 | **Ctrl+F**, **Esc** | Jump to search, clear it |
 | **Right-click** a font | Enable, Disable, Install, Favourite, Add to set, Category, Compare, Show in Explorer, Copy name or path |
 | **Right-click** a folder or set | Rescan, Remove, Enable or Disable all, Rename, Delete |
-| **⋯** menu | Add folder, Rescan, Refresh online catalogues, Download folder, Clear preview cache, App theme |
+| **⋯** menu | Add folder, Rescan, Refresh online catalogues, Download folder, Clear preview cache, Back up and restore settings, App theme |
 
 ## Where things are kept
 
 | What | Where |
 |---|---|
 | Settings: folders, what's enabled, favourites, sets, category choices, your sample text | `%APPDATA%\KinetikFonts\config.json` |
+| A copy of your settings, written when the app closes | `KinetikFonts-settings.json` next to the exe |
 | Online catalogues and preview files | `%LOCALAPPDATA%\KinetikFonts\cache` |
 | Fonts you download | `Documents\Kinetik Fonts` (changeable) |
 | Fonts you install for yourself | `%LOCALAPPDATA%\Microsoft\Windows\Fonts` |

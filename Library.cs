@@ -26,6 +26,14 @@ class Config
     public Dictionary<string, string> Cats { get; set; } = new(); // your own category choices, by file
 }
 
+class BackupFile
+{
+    public string App { get; set; }
+    public int Version { get; set; }
+    public string Saved { get; set; }
+    public Config Settings { get; set; }
+}
+
 class FontRow
 {
     public string Kind, Hive, Val, Data, Path, Name, Fam, Style = "Regular", Folder, Src, Key, Norm, Cat = "Other";
@@ -58,7 +66,11 @@ class Library
     static readonly string[] Protected = { "segoeui", "segmdl2", "seguisym", "seguiemj", "marlett", "tahoma", "micross", "consola", "arial", "symbol" };
     public static readonly string[] Cats = { "Sans serif", "Serif", "Slab", "Script", "Display", "Monospace", "Symbol", "Other" };
 
+    public static readonly string BackupBeside = Path.Combine(AppContext.BaseDirectory, "KinetikFonts-settings.json");
+    static readonly string[] SortNames = { "Name", "Newest", "Largest", "Source", "State", "Popular" };
+
     public Config Cfg;
+    public bool Fresh; // no settings file yet: a new install or a new Windows
     public HashSet<string> Fav;
     public readonly HashSet<string> Pub = new();
     public List<FontRow> Rows = new();
@@ -66,6 +78,7 @@ class Library
 
     public Library()
     {
+        Fresh = !File.Exists(CfgPath);
         try { Cfg = JsonSerializer.Deserialize<Config>(File.ReadAllText(CfgPath)) ?? new Config(); }
         catch { Cfg = new Config(); }
         Fav = new HashSet<string>(Cfg.Favourites);
@@ -80,6 +93,75 @@ class Library
         Cfg.Enabled = Pub.OrderBy(x => x).ToList();
         Directory.CreateDirectory(Path.GetDirectoryName(CfgPath));
         File.WriteAllText(CfgPath, JsonSerializer.Serialize(Cfg, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    // ---- backup and restore: your folders, favourites, sets, categories, enabled folder fonts and preferences in one file
+
+    public static string Pack(Config c) => JsonSerializer.Serialize(new BackupFile
+    {
+        App = "KinetikFonts", Version = 1, Saved = DateTime.Now.ToString("s"),
+        Settings = new Config
+        {
+            Folders = c.Folders, Enabled = c.Enabled, Favourites = c.Favourites, Sets = c.Sets, Cats = c.Cats, Downloaded = c.Downloaded,
+            DownloadDir = c.DownloadDir, Text = c.Text, Size = c.Size, Stacked = c.Stacked, Sort = c.Sort, // not Disabled: that is about this PC's registry
+        },
+    }, new JsonSerializerOptions { WriteIndented = true });
+
+    public string Pack()
+    {
+        Cfg.Favourites = Fav.OrderBy(x => x).ToList();
+        Cfg.Enabled = Pub.OrderBy(x => x).ToList();
+        return Pack(Cfg);
+    }
+
+    public void Backup(string path)
+    {
+        var tmp = path + ".part";
+        File.WriteAllText(tmp, Pack());
+        File.Move(tmp, path, true);
+    }
+
+    // Reads and checks a backup; a damaged or foreign file is refused rather than half-applied.
+    public static Config Unpack(string json)
+    {
+        BackupFile b;
+        try { b = JsonSerializer.Deserialize<BackupFile>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
+        catch (JsonException) { throw new InvalidDataException("that file isn't a Kinetik Fonts backup"); }
+        if (b?.App != "KinetikFonts" || b.Settings == null) throw new InvalidDataException("that file isn't a Kinetik Fonts backup");
+        if (b.Version > 1) throw new InvalidDataException("that backup was made by a newer version of Kinetik Fonts");
+        var s = b.Settings;
+        List<string> Clean(IEnumerable<string> src, Func<string, bool> ok) =>
+            (src ?? new List<string>()).Where(x => !string.IsNullOrWhiteSpace(x) && x.Length < 1024 && ok(x)).Distinct(StringComparer.OrdinalIgnoreCase).Take(200000).ToList();
+        bool Font(string x) => Path.IsPathRooted(x) && Exts.Contains(Path.GetExtension(x).ToLowerInvariant());
+        var def = new Config();
+        return new Config
+        {
+            Folders = Clean(s.Folders, Path.IsPathRooted),
+            Enabled = Clean(s.Enabled, Font),
+            Favourites = Clean(s.Favourites, _ => true),
+            Downloaded = Clean(s.Downloaded, x => x.StartsWith("web:")),
+            Sets = (s.Sets ?? new()).Where(kv => !string.IsNullOrWhiteSpace(kv.Key) && kv.Key.Length < 100).ToDictionary(kv => kv.Key.Trim(), kv => Clean(kv.Value, _ => true)),
+            Cats = (s.Cats ?? new()).Where(kv => kv.Key?.Length < 1024 && Cats.Contains(kv.Value)).ToDictionary(kv => kv.Key, kv => kv.Value),
+            DownloadDir = !string.IsNullOrWhiteSpace(s.DownloadDir) && Path.IsPathRooted(s.DownloadDir) ? s.DownloadDir : def.DownloadDir,
+            Text = (s.Text ?? def.Text).Length > 500 ? def.Text : s.Text ?? def.Text,
+            Size = Math.Max(10, Math.Min(120, s.Size)),
+            Stacked = s.Stacked,
+            Sort = SortNames.Contains(s.Sort) ? s.Sort : "Name",
+        };
+    }
+
+    // Replaces the settings with a backup's and brings the enabled fonts in line with it.
+    public Config Restore(string path)
+    {
+        var c = Unpack(File.ReadAllText(path));
+        foreach (var p in Pub.Except(c.Enabled, StringComparer.OrdinalIgnoreCase).ToList()) { Native.RemoveFontResourceEx(p, 0, IntPtr.Zero); Pub.Remove(p); }
+        foreach (var p in c.Enabled) if (!Pub.Contains(p) && File.Exists(p) && Native.AddFontResourceEx(p, 0, IntPtr.Zero) > 0) Pub.Add(p);
+        Native.Broadcast();
+        c.Disabled = Cfg.Disabled;
+        Cfg = c;
+        Fav = new HashSet<string>(c.Favourites);
+        Save();
+        return c;
     }
 
     public static string Norm(string s) => new string((s ?? "").Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
