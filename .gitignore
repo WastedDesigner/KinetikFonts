@@ -1,0 +1,8 @@
+*.exe
+*.pdb
+*.zip
+dist/
+*.zip.sha256
+bin/
+obj/
+.vs/
