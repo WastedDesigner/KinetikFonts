@@ -5,7 +5,7 @@
 [![Latest release](https://img.shields.io/github/v/release/WastedDesigner/KinetikFonts?label=download)](../../releases/latest)
 [![License: GPL v3](https://img.shields.io/github/license/WastedDesigner/KinetikFonts)](LICENSE)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
-![.NET 8](https://img.shields.io/badge/.NET-8-512BD4)
+![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)
 
 **Kinetik Fonts** is a free, open-source **font manager for Windows 11 and Windows 10**. Browse every font on your PC and every font in your folders at once, with each name drawn **in its own typeface**. **Enable and disable fonts on the fly**, preview and **compare them side by side**, and let it **tag every font with a category** (serif, sans serif, script, monospace and more). It can also **search and install free fonts** from **Google Fonts**, **Fontshare** and **Font Squirrel** without leaving the app.
 
@@ -139,7 +139,7 @@ Kinetik Fonts uses the suite's app theme: **Match Windows, Graphite, OLED black,
 ## Download and use
 
 1. Download `KinetikFonts.zip` from [Releases](../../releases/latest) and extract it anywhere.
-2. Run `KinetikFonts.exe`. Install the .NET 8 Desktop Runtime if Windows asks for it.
+2. Run `KinetikFonts.exe`. Install the .NET 10 Desktop Runtime if Windows asks for it.
 3. Click **Add folder…** in the sidebar and point it at a folder of fonts, or just browse the **Installed** fonts and the **Online** sources.
 
 The exe is signed with my own certificate, which Windows doesn't know, so Windows may still show an "unknown publisher" or SmartScreen warning. Each release lists the SHA-256 of the exe so you can check your download. It's one portable file: delete it and its settings (see [Where things are kept](#where-things-are-kept)) to remove it.
@@ -169,7 +169,7 @@ The exe is signed with my own certificate, which Windows doesn't know, so Window
 
 ## Requirements
 
-Windows 10 or 11 (64-bit) with the **.NET 8 Desktop Runtime**. Windows will offer to download it the first time you run the app if it's missing.
+Windows 10 or 11 (64-bit) with the **.NET 10 Desktop Runtime**. Windows will offer to download it the first time you run the app if it's missing.
 
 ## Known limitations
 
@@ -182,7 +182,7 @@ Windows 10 or 11 (64-bit) with the **.NET 8 Desktop Runtime**. Windows will offe
 
 ## Building from source
 
-You need the **.NET 8 SDK**.
+You need the **.NET 10 SDK**.
 
 ```
 build.bat
